@@ -1,1 +1,649 @@
-<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Poultry Manager</title><link rel="stylesheet" href="style.css"></head><body><div id="login" class="screen"><div class="card login"><h1>🐔 Poultry Manager</h1><p>Broiler Farm Management</p><input id="email" placeholder="Email"><input id="password" type="password" placeholder="Password"><button onclick="login()">Login</button><small>Owner: owner@poultry.local / Owner@123</small></div></div><div id="app" class="hidden"><header><b>🐔 Poultry Manager</b><span id="role"></span><button onclick="logout()">Logout</button></header><nav><button onclick="show('dashboard')">Dashboard</button><button onclick="show('daily')">Daily Entry</button><button onclick="show('batches')">Batches</button><button id="usersBtn" onclick="show('users')">Owner / Users</button></nav><main><section id="dashboard"><h2>Farm Dashboard</h2><select id="dashBatch" onchange="report(this.value)"></select><div id="stats" class="grid"></div></section><section id="daily" class="hidden"><h2>Daily Data Entry</h2><form onsubmit="daily(event)" class="card form"><select id="dBatch"></select><input id="date" type="date" required><input id="feed" type="number" step=".01" placeholder="Feed kg"><input id="dead" type="number" placeholder="Dead birds / mortality"><input id="weight" type="number" step=".01" placeholder="Today's total weight kg"><input id="med" type="number" step=".01" placeholder="Medicine expense"><input id="other" type="number" step=".01" placeholder="Other expense"><textarea id="notes" placeholder="Notes"></textarea><button>Save Daily Entry</button></form></section><section id="batches" class="hidden"><h2>Batch Management</h2><form onsubmit="batch(event)" class="card form"><input id="bn" placeholder="Batch name" required><input id="bd" type="date" required><input id="bc" type="number" placeholder="Chicks quantity" required><input id="br" type="number" step=".01" placeholder="Chick rate"><input id="sr" type="number" step=".01" placeholder="Sale rate / kg"><button>Create Batch</button></form><div id="bl"></div></section><section id="users" class="hidden"><h2>Owner Command Center</h2><form onsubmit="user(event)" class="card form"><input id="un" placeholder="User name" required><input id="ue" type="email" placeholder="Email" required><input id="up" placeholder="Password" required><select id="ur"><option value="worker">Worker</option><option value="manager">Manager</option></select><button>Add User</button></form><div id="ul"></div></section></main></div><script src="app.js"></script></body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>Poultry Manager</title>
+
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+<!-- =====================================================
+     LOGIN
+===================================================== -->
+
+<section id="login" class="screen">
+
+  <div class="login-box">
+
+    <div class="logo">
+      🐔
+    </div>
+
+    <h1>Poultry Manager</h1>
+
+    <p class="subtitle">
+      Poultry Farm Management System
+    </p>
+
+    <form onsubmit="login(); return false;">
+
+      <label>Email</label>
+
+      <input
+        id="email"
+        type="email"
+        placeholder="Enter email"
+        value="owner@poultry.local"
+        required
+      >
+
+      <label>Password</label>
+
+      <input
+        id="password"
+        type="password"
+        placeholder="Enter password"
+        value="123456"
+        required
+      >
+
+      <button type="submit">
+        Login
+      </button>
+
+    </form>
+
+    <small>
+      Default owner: owner@poultry.local
+    </small>
+
+  </div>
+
+</section>
+
+
+<!-- =====================================================
+     MAIN APP
+===================================================== -->
+
+<div id="app" class="hidden">
+
+  <!-- HEADER -->
+
+  <header>
+
+    <div>
+      <h2>🐔 Poultry Manager</h2>
+      <span id="role"></span>
+    </div>
+
+    <button onclick="logout()" class="logout">
+      Logout
+    </button>
+
+  </header>
+
+
+  <!-- NAVIGATION -->
+
+  <nav>
+
+    <button onclick="show('dashboard')">
+      📊 Dashboard
+    </button>
+
+    <button onclick="show('daily')">
+      📝 Daily Entry
+    </button>
+
+    <button onclick="show('batches')">
+      🐔 Batches
+    </button>
+
+    <button onclick="show('newBatch')">
+      ➕ New Batch
+    </button>
+
+    <button onclick="show('feed')">
+      🌾 Feed
+    </button>
+
+    <button onclick="show('sales')">
+      💰 Sales
+    </button>
+
+    <button id="usersBtn" onclick="show('users')">
+      👥 Users
+    </button>
+
+  </nav>
+
+
+  <main>
+
+    <!-- =================================================
+         DASHBOARD
+    ================================================== -->
+
+    <section id="dashboard">
+
+      <div class="page-title">
+        <h1>Dashboard</h1>
+        <p>Farm performance overview</p>
+      </div>
+
+      <div class="card">
+
+        <label>Select Batch</label>
+
+        <select
+          id="dashBatch"
+          onchange="dashboardBatchChange()">
+        </select>
+
+      </div>
+
+      <div id="stats" class="stats-grid">
+
+        <div class="stat">
+          Live Birds
+          <b>0</b>
+        </div>
+
+        <div class="stat">
+          Feed
+          <b>0 kg</b>
+        </div>
+
+        <div class="stat">
+          Weight
+          <b>0 kg</b>
+        </div>
+
+        <div class="stat">
+          FCR
+          <b>0.00</b>
+        </div>
+
+        <div class="stat">
+          Cost / Kg
+          <b>₹0</b>
+        </div>
+
+        <div class="stat">
+          Total Cost
+          <b>₹0</b>
+        </div>
+
+        <div class="stat">
+          Sale Value
+          <b>₹0</b>
+        </div>
+
+        <div class="stat">
+          Profit
+          <b>₹0</b>
+        </div>
+
+      </div>
+
+    </section>
+
+
+    <!-- =================================================
+         DAILY ENTRY
+    ================================================== -->
+
+    <section id="daily" class="hidden">
+
+      <div class="page-title">
+        <h1>Daily Entry</h1>
+        <p>Enter today's farm data</p>
+      </div>
+
+      <form
+        class="card form-grid"
+        onsubmit="daily(event)"
+      >
+
+        <div>
+
+          <label>Batch</label>
+
+          <select id="dBatch" required></select>
+
+        </div>
+
+
+        <div>
+
+          <label>Date</label>
+
+          <input
+            id="date"
+            type="date"
+            required
+          >
+
+        </div>
+
+
+        <div>
+
+          <label>Dead Birds</label>
+
+          <input
+            id="dead"
+            type="number"
+            min="0"
+            placeholder="0"
+            value="0"
+          >
+
+        </div>
+
+
+        <div>
+
+          <label>Total Weight (Kg)</label>
+
+          <input
+            id="weight"
+            type="number"
+            min="0"
+            step="0.01"
+            placeholder="0"
+            value="0"
+          >
+
+        </div>
+
+
+        <div>
+
+          <label>Medicine Cost (₹)</label>
+
+          <input
+            id="med"
+            type="number"
+            min="0"
+            step="0.01"
+            placeholder="0"
+            value="0"
+          >
+
+        </div>
+
+
+        <div>
+
+          <label>Other Cost (₹)</label>
+
+          <input
+            id="other"
+            type="number"
+            min="0"
+            step="0.01"
+            placeholder="0"
+            value="0"
+          >
+
+        </div>
+
+
+        <div class="full">
+
+          <label>Notes</label>
+
+          <textarea
+            id="notes"
+            placeholder="Enter notes..."
+          ></textarea>
+
+        </div>
+
+
+        <div class="full">
+
+          <button type="submit">
+            💾 Save Daily Entry
+          </button>
+
+        </div>
+
+      </form>
+
+    </section>
+
+
+    <!-- =================================================
+         BATCHES
+    ================================================== -->
+
+    <section id="batches" class="hidden">
+
+      <div class="page-title">
+
+        <h1>Batches</h1>
+
+        <p>
+          All poultry batches
+        </p>
+
+      </div>
+
+      <div id="bl" class="list"></div>
+
+    </section>
+
+
+    <!-- =================================================
+         NEW BATCH
+    ================================================== -->
+
+    <section id="newBatch" class="hidden">
+
+      <div class="page-title">
+
+        <h1>Create New Batch</h1>
+
+        <p>
+          Start a new poultry batch
+        </p>
+
+      </div>
+
+
+      <form
+        class="card form-grid"
+        onsubmit="batch(event)"
+      >
+
+        <div>
+
+          <label>Batch Name</label>
+
+          <input
+            id="bn"
+            type="text"
+            placeholder="Example: Batch 001"
+            required
+          >
+
+        </div>
+
+
+        <div>
+
+          <label>Start Date</label>
+
+          <input
+            id="bd"
+            type="date"
+            required
+          >
+
+        </div>
+
+
+        <div>
+
+          <label>Total Chicks</label>
+
+          <input
+            id="bc"
+            type="number"
+            min="1"
+            placeholder="5000"
+            required
+          >
+
+        </div>
+
+
+        <div>
+
+          <label>Chick Rate / Bird (₹)</label>
+
+          <input
+            id="br"
+            type="number"
+            min="0"
+            step="0.01"
+            placeholder="60"
+          >
+
+        </div>
+
+
+        <div>
+
+          <label>Expected Sale Rate / Kg (₹)</label>
+
+          <input
+            id="sr"
+            type="number"
+            min="0"
+            step="0.01"
+            placeholder="115"
+          >
+
+        </div>
+
+
+        <div class="full">
+
+          <button type="submit">
+            ➕ Create Batch
+          </button>
+
+        </div>
+
+      </form>
+
+    </section>
+
+
+    <!-- =================================================
+         FEED
+    ================================================== -->
+
+    <section id="feed" class="hidden">
+
+      <div class="page-title">
+
+        <h1>Feed Management</h1>
+
+        <p>
+          Feed stock and purchases
+        </p>
+
+      </div>
+
+      <div class="card">
+
+        <h3>Feed Stock</h3>
+
+        <div id="feedStock">
+
+          <p>
+            Feed stock management will appear here.
+          </p>
+
+        </div>
+
+      </div>
+
+      <div class="card">
+
+        <h3>Feed Information</h3>
+
+        <p>
+          1 Feed Bag = 50 KG
+        </p>
+
+        <p>
+          Pre-Starter • Starter • Finisher
+        </p>
+
+      </div>
+
+    </section>
+
+
+    <!-- =================================================
+         SALES
+    ================================================== -->
+
+    <section id="sales" class="hidden">
+
+      <div class="page-title">
+
+        <h1>Sales</h1>
+
+        <p>
+          Chicken sales management
+        </p>
+
+      </div>
+
+      <div class="card">
+
+        <h3>Sales Module</h3>
+
+        <p>
+          Sales entry module is ready for connection with
+          the sales API.
+        </p>
+
+        <p>
+          You can record party, vehicle, KG, rate and
+          total sale amount.
+        </p>
+
+      </div>
+
+    </section>
+
+
+    <!-- =================================================
+         USERS
+    ================================================== -->
+
+    <section id="users" class="hidden">
+
+      <div class="page-title">
+
+        <h1>User Management</h1>
+
+        <p>
+          Owner can manage farm users
+        </p>
+
+      </div>
+
+
+      <form
+        class="card form-grid"
+        onsubmit="user(event)"
+      >
+
+        <div>
+
+          <label>Name</label>
+
+          <input
+            id="un"
+            type="text"
+            placeholder="Worker name"
+            required
+          >
+
+        </div>
+
+
+        <div>
+
+          <label>Email</label>
+
+          <input
+            id="ue"
+            type="email"
+            placeholder="worker@email.com"
+            required
+          >
+
+        </div>
+
+
+        <div>
+
+          <label>Password</label>
+
+          <input
+            id="up"
+            type="password"
+            placeholder="Password"
+            required
+          >
+
+        </div>
+
+
+        <div>
+
+          <label>Role</label>
+
+          <select id="ur">
+
+            <option value="worker">
+              Worker
+            </option>
+
+            <option value="manager">
+              Manager
+            </option>
+
+          </select>
+
+        </div>
+
+
+        <div class="full">
+
+          <button type="submit">
+            👤 Add User
+          </button>
+
+        </div>
+
+      </form>
+
+
+      <div class="card">
+
+        <h3>Existing Users</h3>
+
+        <div id="ul" class="list"></div>
+
+      </div>
+
+    </section>
+
+  </main>
+
+</div>
+
+
+<!-- =====================================================
+     JAVASCRIPT
+===================================================== -->
+
+<script src="app.js"></script>
+
+</body>
+</html>
