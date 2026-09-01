@@ -7,14 +7,17 @@ const Database = require("better-sqlite3");
 const app = express();
 const db = new Database("poultry.db");
 
-const SECRET = process.env.JWT_SECRET || "poultry-manager-secret-change-this";
+const SECRET =
+  process.env.JWT_SECRET || "poultry-manager-secret-change-this";
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-// =========================
-// DATABASE TABLES
-// =========================
+// =====================================================
+// DATABASE
+// =====================================================
+
+db.pragma("foreign_keys = ON");
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
@@ -32,7 +35,8 @@ CREATE TABLE IF NOT EXISTS batches (
   start_date TEXT,
   chicks INTEGER DEFAULT 0,
   chick_rate REAL DEFAULT 0,
-  sale_rate REAL DEFAULT 0
+  sale_rate REAL DEFAULT 0,
+  status TEXT DEFAULT 'active'
 );
 
 CREATE TABLE IF NOT EXISTS daily (
@@ -49,11 +53,99 @@ CREATE TABLE IF NOT EXISTS daily (
   FOREIGN KEY(batch_id) REFERENCES batches(id),
   FOREIGN KEY(user_id) REFERENCES users(id)
 );
+
+CREATE TABLE IF NOT EXISTS feed_stock (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  feed_name TEXT NOT NULL UNIQUE,
+  bags REAL DEFAULT 0,
+  price_per_bag REAL DEFAULT 0,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS feed_purchase (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  feed_name TEXT NOT NULL,
+  date TEXT NOT NULL,
+  bags REAL NOT NULL DEFAULT 0,
+  price_per_bag REAL NOT NULL DEFAULT 0,
+  total_amount REAL NOT NULL DEFAULT 0,
+  supplier TEXT DEFAULT '',
+  notes TEXT DEFAULT '',
+  user_id INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS feed_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id INTEGER NOT NULL,
+  date TEXT NOT NULL,
+  feed_name TEXT NOT NULL,
+  bags REAL NOT NULL DEFAULT 0,
+  kg REAL NOT NULL DEFAULT 0,
+  price_per_bag REAL DEFAULT 0,
+  total_cost REAL DEFAULT 0,
+  user_id INTEGER,
+  FOREIGN KEY(batch_id) REFERENCES batches(id),
+  FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS sales (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id INTEGER NOT NULL,
+  date TEXT NOT NULL,
+  party_name TEXT NOT NULL,
+  vehicle_no TEXT DEFAULT '',
+  rate_per_kg REAL NOT NULL DEFAULT 0,
+  kg REAL NOT NULL DEFAULT 0,
+  nang INTEGER NOT NULL DEFAULT 0,
+  total_amount REAL NOT NULL DEFAULT 0,
+  notes TEXT DEFAULT '',
+  user_id INTEGER,
+  FOREIGN KEY(batch_id) REFERENCES batches(id),
+  FOREIGN KEY(user_id) REFERENCES users(id)
+);
 `);
 
-// =========================
+// =====================================================
+// SAFE MIGRATION FOR OLD DATABASE
+// =====================================================
+
+function addColumnIfMissing(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+
+  const exists = columns.some((c) => c.name === column);
+
+  if (!exists) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+try {
+  addColumnIfMissing("batches", "status", "TEXT DEFAULT 'active'");
+} catch (e) {
+  console.log("Batch migration:", e.message);
+}
+
+// =====================================================
+// INITIAL FEED TYPES
+// =====================================================
+
+const feedTypes = [
+  "Pre-Starter",
+  "Starter",
+  "Finisher"
+];
+
+for (const feedName of feedTypes) {
+  db.prepare(`
+    INSERT OR IGNORE INTO feed_stock
+    (feed_name, bags, price_per_bag)
+    VALUES (?, 0, 0)
+  `).run(feedName);
+}
+
+// =====================================================
 // DEFAULT OWNER
-// =========================
+// =====================================================
 
 const ownerExists = db
   .prepare("SELECT id FROM users WHERE role = 'owner' LIMIT 1")
@@ -63,7 +155,8 @@ if (!ownerExists) {
   const passwordHash = bcrypt.hashSync("123456", 10);
 
   db.prepare(`
-    INSERT INTO users (name, email, password, role, active)
+    INSERT INTO users
+    (name, email, password, role, active)
     VALUES (?, ?, ?, ?, ?)
   `).run(
     "Owner",
@@ -74,9 +167,9 @@ if (!ownerExists) {
   );
 }
 
-// =========================
-// AUTH MIDDLEWARE
-// =========================
+// =====================================================
+// AUTH
+// =====================================================
 
 function auth(req, res, next) {
   try {
@@ -89,6 +182,7 @@ function auth(req, res, next) {
     }
 
     const token = header.replace("Bearer ", "");
+
     req.user = jwt.verify(token, SECRET);
 
     next();
@@ -109,13 +203,17 @@ function ownerOnly(req, res, next) {
   next();
 }
 
-// =========================
+// =====================================================
 // LOGIN
-// =========================
+// =====================================================
 
 app.post("/api/login", (req, res) => {
   try {
-    const { email, password } = req.body;
+    const email = String(req.body.email || "")
+      .trim()
+      .toLowerCase();
+
+    const password = String(req.body.password || "");
 
     if (!email || !password) {
       return res.status(400).json({
@@ -124,9 +222,12 @@ app.post("/api/login", (req, res) => {
     }
 
     const user = db
-      .prepare(
-        "SELECT * FROM users WHERE email = ? AND active = 1"
-      )
+      .prepare(`
+        SELECT *
+        FROM users
+        WHERE LOWER(email) = ?
+        AND active = 1
+      `)
       .get(email);
 
     if (!user) {
@@ -135,7 +236,10 @@ app.post("/api/login", (req, res) => {
       });
     }
 
-    const ok = bcrypt.compareSync(password, user.password);
+    const ok = bcrypt.compareSync(
+      password,
+      user.password
+    );
 
     if (!ok) {
       return res.status(401).json({
@@ -165,6 +269,7 @@ app.post("/api/login", (req, res) => {
         role: user.role
       }
     });
+
   } catch (err) {
     res.status(500).json({
       error: err.message
@@ -172,17 +277,17 @@ app.post("/api/login", (req, res) => {
   }
 });
 
-// =========================
+// =====================================================
 // CURRENT USER
-// =========================
+// =====================================================
 
 app.get("/api/me", auth, (req, res) => {
   res.json(req.user);
 });
 
-// =========================
+// =====================================================
 // USERS
-// =========================
+// =====================================================
 
 app.get("/api/users", auth, ownerOnly, (req, res) => {
   const users = db
@@ -198,7 +303,13 @@ app.get("/api/users", auth, ownerOnly, (req, res) => {
 
 app.post("/api/users", auth, ownerOnly, (req, res) => {
   try {
-    const { name, email, password, role } = req.body;
+    const name = String(req.body.name || "").trim();
+    const email = String(req.body.email || "")
+      .trim()
+      .toLowerCase();
+
+    const password = String(req.body.password || "");
+    const role = req.body.role || "worker";
 
     if (!name || !email || !password) {
       return res.status(400).json({
@@ -206,25 +317,27 @@ app.post("/api/users", auth, ownerOnly, (req, res) => {
       });
     }
 
-    const passwordHash = bcrypt.hashSync(password, 10);
+    const passwordHash =
+      bcrypt.hashSync(password, 10);
 
     const result = db
       .prepare(`
         INSERT INTO users
-        (name, email, password, role)
-        VALUES (?, ?, ?, ?)
+        (name, email, password, role, active)
+        VALUES (?, ?, ?, ?, 1)
       `)
       .run(
         name,
         email,
         passwordHash,
-        role || "worker"
+        role
       );
 
     res.json({
       success: true,
       id: result.lastInsertRowid
     });
+
   } catch (err) {
     res.status(400).json({
       error: err.message
@@ -232,35 +345,49 @@ app.post("/api/users", auth, ownerOnly, (req, res) => {
   }
 });
 
-app.patch("/api/users/:id", auth, ownerOnly, (req, res) => {
-  try {
-    const { active, role } = req.body;
+app.patch(
+  "/api/users/:id",
+  auth,
+  ownerOnly,
+  (req, res) => {
+    try {
+      const active =
+        req.body.active === undefined
+          ? null
+          : Number(req.body.active);
 
-    db.prepare(`
-      UPDATE users
-      SET
-        active = COALESCE(?, active),
-        role = COALESCE(?, role)
-      WHERE id = ?
-    `).run(
-      active,
-      role,
-      req.params.id
-    );
+      const role =
+        req.body.role === undefined
+          ? null
+          : req.body.role;
 
-    res.json({
-      success: true
-    });
-  } catch (err) {
-    res.status(400).json({
-      error: err.message
-    });
+      db.prepare(`
+        UPDATE users
+        SET
+          active = COALESCE(?, active),
+          role = COALESCE(?, role)
+        WHERE id = ?
+      `).run(
+        active,
+        role,
+        Number(req.params.id)
+      );
+
+      res.json({
+        success: true
+      });
+
+    } catch (err) {
+      res.status(400).json({
+        error: err.message
+      });
+    }
   }
-});
+);
 
-// =========================
+// =====================================================
 // BATCHES
-// =========================
+// =====================================================
 
 app.get("/api/batches", auth, (req, res) => {
   const batches = db
@@ -276,13 +403,20 @@ app.get("/api/batches", auth, (req, res) => {
 
 app.post("/api/batches", auth, (req, res) => {
   try {
-    const {
-      name,
-      start_date,
-      chicks,
-      chick_rate,
-      sale_rate
-    } = req.body;
+    const name =
+      String(req.body.name || "").trim();
+
+    const startDate =
+      req.body.start_date || "";
+
+    const chicks =
+      Number(req.body.chicks || 0);
+
+    const chickRate =
+      Number(req.body.chick_rate || 0);
+
+    const saleRate =
+      Number(req.body.sale_rate || 0);
 
     if (!name) {
       return res.status(400).json({
@@ -293,21 +427,29 @@ app.post("/api/batches", auth, (req, res) => {
     const result = db
       .prepare(`
         INSERT INTO batches
-        (name, start_date, chicks, chick_rate, sale_rate)
-        VALUES (?, ?, ?, ?, ?)
+        (
+          name,
+          start_date,
+          chicks,
+          chick_rate,
+          sale_rate,
+          status
+        )
+        VALUES (?, ?, ?, ?, ?, 'active')
       `)
       .run(
         name,
-        start_date || "",
-        Number(chicks || 0),
-        Number(chick_rate || 0),
-        Number(sale_rate || 0)
+        startDate,
+        chicks,
+        chickRate,
+        saleRate
       );
 
     res.json({
       success: true,
       id: result.lastInsertRowid
     });
+
   } catch (err) {
     res.status(400).json({
       error: err.message
@@ -315,24 +457,34 @@ app.post("/api/batches", auth, (req, res) => {
   }
 });
 
-// =========================
-// DAILY DATA
-// =========================
+// =====================================================
+// DAILY ENTRY
+// =====================================================
 
 app.post("/api/daily", auth, (req, res) => {
   try {
-    const {
-      batch_id,
-      date,
-      feed_kg,
-      dead,
-      weight_kg,
-      medicine,
-      other,
-      notes
-    } = req.body;
+    const batchId =
+      Number(req.body.batch_id || 0);
 
-    if (!batch_id || !date) {
+    const date =
+      String(req.body.date || "").trim();
+
+    const dead =
+      Number(req.body.dead || 0);
+
+    const weightKg =
+      Number(req.body.weight_kg || 0);
+
+    const medicine =
+      Number(req.body.medicine || 0);
+
+    const other =
+      Number(req.body.other || 0);
+
+    const notes =
+      String(req.body.notes || "");
+
+    if (!batchId || !date) {
       return res.status(400).json({
         error: "Batch and date required"
       });
@@ -352,17 +504,16 @@ app.post("/api/daily", auth, (req, res) => {
           notes,
           user_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)
       `)
       .run(
-        Number(batch_id),
+        batchId,
         date,
-        Number(feed_kg || 0),
-        Number(dead || 0),
-        Number(weight_kg || 0),
-        Number(medicine || 0),
-        Number(other || 0),
-        notes || "",
+        dead,
+        weightKg,
+        medicine,
+        other,
+        notes,
         req.user.id
       );
 
@@ -370,6 +521,7 @@ app.post("/api/daily", auth, (req, res) => {
       success: true,
       id: result.lastInsertRowid
     });
+
   } catch (err) {
     res.status(400).json({
       error: err.message
@@ -377,112 +529,658 @@ app.post("/api/daily", auth, (req, res) => {
   }
 });
 
-// =========================
-// BATCH REPORT
-// =========================
+// =====================================================
+// FEED STOCK
+// 1 BAG = 50 KG
+// =====================================================
 
-app.get("/api/report/:id", auth, (req, res) => {
-  try {
-    const batch = db
-      .prepare("SELECT * FROM batches WHERE id = ?")
-      .get(req.params.id);
+app.get("/api/feed-stock", auth, (req, res) => {
+  const stock = db
+    .prepare(`
+      SELECT
+        feed_name,
+        bags,
+        bags * 50 AS kg,
+        price_per_bag,
+        bags * price_per_bag AS stock_value
+      FROM feed_stock
+      ORDER BY id ASC
+    `)
+    .all();
 
-    if (!batch) {
-      return res.status(404).json({
-        error: "Batch not found"
+  res.json(stock);
+});
+
+// =====================================================
+// FEED PURCHASE
+// =====================================================
+
+app.post(
+  "/api/feed-purchase",
+  auth,
+  (req, res) => {
+    try {
+      const feedName =
+        String(req.body.feed_name || "").trim();
+
+      const date =
+        String(req.body.date || "").trim();
+
+      const bags =
+        Number(req.body.bags || 0);
+
+      const price =
+        Number(req.body.price_per_bag || 0);
+
+      const supplier =
+        String(req.body.supplier || "");
+
+      const notes =
+        String(req.body.notes || "");
+
+      if (
+        !feedName ||
+        !date ||
+        bags <= 0
+      ) {
+        return res.status(400).json({
+          error:
+            "Feed, date and bags are required"
+        });
+      }
+
+      const total =
+        bags * price;
+
+      const transaction =
+        db.transaction(() => {
+
+          db.prepare(`
+            INSERT INTO feed_purchase
+            (
+              feed_name,
+              date,
+              bags,
+              price_per_bag,
+              total_amount,
+              supplier,
+              notes,
+              user_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            feedName,
+            date,
+            bags,
+            price,
+            total,
+            supplier,
+            notes,
+            req.user.id
+          );
+
+          db.prepare(`
+            INSERT INTO feed_stock
+            (
+              feed_name,
+              bags,
+              price_per_bag
+            )
+            VALUES (?, ?, ?)
+            ON CONFLICT(feed_name)
+            DO UPDATE SET
+              bags = feed_stock.bags + excluded.bags,
+              price_per_bag = excluded.price_per_bag,
+              updated_at = CURRENT_TIMESTAMP
+          `).run(
+            feedName,
+            bags,
+            price
+          );
+        });
+
+      transaction();
+
+      res.json({
+        success: true,
+        bags,
+        kg: bags * 50,
+        total
+      });
+
+    } catch (err) {
+      res.status(400).json({
+        error: err.message
       });
     }
+  }
+);
 
-    const daily = db
+// =====================================================
+// FEED USAGE
+// 1 BAG = 50 KG
+// =====================================================
+
+app.post(
+  "/api/feed-usage",
+  auth,
+  (req, res) => {
+    try {
+      const batchId =
+        Number(req.body.batch_id || 0);
+
+      const date =
+        String(req.body.date || "").trim();
+
+      const feedName =
+        String(req.body.feed_name || "").trim();
+
+      const bags =
+        Number(req.body.bags || 0);
+
+      if (
+        !batchId ||
+        !date ||
+        !feedName ||
+        bags <= 0
+      ) {
+        return res.status(400).json({
+          error:
+            "Batch, date, feed and bags are required"
+        });
+      }
+
+      const stock = db
+        .prepare(`
+          SELECT *
+          FROM feed_stock
+          WHERE feed_name = ?
+        `)
+        .get(feedName);
+
+      if (!stock) {
+        return res.status(400).json({
+          error: "Feed type not found"
+        });
+      }
+
+      if (Number(stock.bags) < bags) {
+        return res.status(400).json({
+          error:
+            `Insufficient ${feedName} stock. ` +
+            `Available: ${stock.bags} bags`
+        });
+      }
+
+      const kg = bags * 50;
+
+      const price =
+        Number(stock.price_per_bag || 0);
+
+      const totalCost =
+        bags * price;
+
+      const transaction =
+        db.transaction(() => {
+
+          db.prepare(`
+            INSERT INTO feed_usage
+            (
+              batch_id,
+              date,
+              feed_name,
+              bags,
+              kg,
+              price_per_bag,
+              total_cost,
+              user_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            batchId,
+            date,
+            feedName,
+            bags,
+            kg,
+            price,
+            totalCost,
+            req.user.id
+          );
+
+          db.prepare(`
+            UPDATE feed_stock
+            SET
+              bags = bags - ?,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE feed_name = ?
+          `).run(
+            bags,
+            feedName
+          );
+
+          db.prepare(`
+            UPDATE daily
+            SET feed_kg = feed_kg + ?
+            WHERE id = (
+              SELECT id
+              FROM daily
+              WHERE batch_id = ?
+              AND date = ?
+              ORDER BY id DESC
+              LIMIT 1
+            )
+          `).run(
+            kg,
+            batchId,
+            date
+          );
+        });
+
+      transaction();
+
+      res.json({
+        success: true,
+        feed_name: feedName,
+        bags,
+        kg,
+        total_cost: totalCost
+      });
+
+    } catch (err) {
+      res.status(400).json({
+        error: err.message
+      });
+    }
+  }
+);
+
+// =====================================================
+// FEED USAGE HISTORY
+// =====================================================
+
+app.get(
+  "/api/feed-usage/:batchId",
+  auth,
+  (req, res) => {
+    const rows = db
       .prepare(`
         SELECT *
-        FROM daily
+        FROM feed_usage
         WHERE batch_id = ?
         ORDER BY date ASC, id ASC
       `)
-      .all(req.params.id);
+      .all(Number(req.params.batchId));
 
-    const totals = db
+    res.json(rows);
+  }
+);
+
+// =====================================================
+// SALES
+// =====================================================
+
+app.post("/api/sales", auth, (req, res) => {
+  try {
+    const batchId =
+      Number(req.body.batch_id || 0);
+
+    const date =
+      String(req.body.date || "").trim();
+
+    const partyName =
+      String(req.body.party_name || "").trim();
+
+    const vehicleNo =
+      String(req.body.vehicle_no || "").trim();
+
+    const rate =
+      Number(req.body.rate_per_kg || 0);
+
+    const kg =
+      Number(req.body.kg || 0);
+
+    const nang =
+      Number(req.body.nang || 0);
+
+    const notes =
+      String(req.body.notes || "");
+
+    if (
+      !batchId ||
+      !date ||
+      !partyName ||
+      kg <= 0
+    ) {
+      return res.status(400).json({
+        error:
+          "Batch, date, party name and KG are required"
+      });
+    }
+
+    const total =
+      rate * kg;
+
+    const result = db
       .prepare(`
-        SELECT
-          COALESCE(SUM(feed_kg), 0) AS total_feed,
-          COALESCE(SUM(dead), 0) AS total_dead,
-          COALESCE(SUM(weight_kg), 0) AS total_weight,
-          COALESCE(SUM(medicine), 0) AS total_medicine,
-          COALESCE(SUM(other), 0) AS total_other
-        FROM daily
-        WHERE batch_id = ?
+        INSERT INTO sales
+        (
+          batch_id,
+          date,
+          party_name,
+          vehicle_no,
+          rate_per_kg,
+          kg,
+          nang,
+          total_amount,
+          notes,
+          user_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .get(req.params.id);
-
-    const birdsAlive =
-      Number(batch.chicks || 0) -
-      Number(totals.total_dead || 0);
-
-    const fcr =
-      Number(totals.total_weight) > 0
-        ? Number(totals.total_feed) /
-          Number(totals.total_weight)
-        : 0;
-
-    const chickCost =
-      Number(batch.chicks || 0) *
-      Number(batch.chick_rate || 0);
-
-    const feedCost = 0;
-
-    const totalCost =
-      chickCost +
-      feedCost +
-      Number(totals.total_medicine || 0) +
-      Number(totals.total_other || 0);
-
-    const costPerKg =
-      Number(totals.total_weight) > 0
-        ? totalCost / Number(totals.total_weight)
-        : 0;
-
-    const estimatedSale =
-      Number(totals.total_weight || 0) *
-      Number(batch.sale_rate || 0);
-
-    const estimatedProfit =
-      estimatedSale - totalCost;
+      .run(
+        batchId,
+        date,
+        partyName,
+        vehicleNo,
+        rate,
+        kg,
+        nang,
+        total,
+        notes,
+        req.user.id
+      );
 
     res.json({
-      batch,
-      daily,
-      totals,
-      birds_alive: birdsAlive,
-      fcr: Number(fcr.toFixed(2)),
-      total_cost: Number(totalCost.toFixed(2)),
-      cost_per_kg: Number(costPerKg.toFixed(2)),
-      estimated_sale: Number(estimatedSale.toFixed(2)),
-      estimated_profit: Number(estimatedProfit.toFixed(2))
+      success: true,
+      id: result.lastInsertRowid,
+      total_amount: total
     });
+
   } catch (err) {
-    res.status(500).json({
+    res.status(400).json({
       error: err.message
     });
   }
 });
 
-// =========================
+// =====================================================
+// SALES LIST
+// =====================================================
+
+app.get(
+  "/api/sales/:batchId",
+  auth,
+  (req, res) => {
+
+    const sales = db
+      .prepare(`
+        SELECT *
+        FROM sales
+        WHERE batch_id = ?
+        ORDER BY date ASC, id ASC
+      `)
+      .all(Number(req.params.batchId));
+
+    res.json(sales);
+  }
+);
+
+// =====================================================
+// BATCH DASHBOARD / REPORT
+// =====================================================
+
+app.get(
+  "/api/report/:id",
+  auth,
+  (req, res) => {
+
+    try {
+      const batchId =
+        Number(req.params.id);
+
+      const batch = db
+        .prepare(`
+          SELECT *
+          FROM batches
+          WHERE id = ?
+        `)
+        .get(batchId);
+
+      if (!batch) {
+        return res.status(404).json({
+          error: "Batch not found"
+        });
+      }
+
+      const daily = db
+        .prepare(`
+          SELECT *
+          FROM daily
+          WHERE batch_id = ?
+          ORDER BY date ASC, id ASC
+        `)
+        .all(batchId);
+
+      const totals = db
+        .prepare(`
+          SELECT
+            COALESCE(SUM(feed_kg), 0)
+              AS total_feed,
+
+            COALESCE(SUM(dead), 0)
+              AS total_dead,
+
+            COALESCE(SUM(weight_kg), 0)
+              AS total_weight,
+
+            COALESCE(SUM(medicine), 0)
+              AS total_medicine,
+
+            COALESCE(SUM(other), 0)
+              AS total_other
+
+          FROM daily
+          WHERE batch_id = ?
+        `)
+        .get(batchId);
+
+      const feedCost = db
+        .prepare(`
+          SELECT
+            COALESCE(SUM(total_cost), 0)
+              AS total_feed_cost
+          FROM feed_usage
+          WHERE batch_id = ?
+        `)
+        .get(batchId);
+
+      const sales = db
+        .prepare(`
+          SELECT
+            COALESCE(SUM(kg), 0)
+              AS total_sale_kg,
+
+            COALESCE(SUM(nang), 0)
+              AS total_sale_nang,
+
+            COALESCE(SUM(total_amount), 0)
+              AS total_sale
+          FROM sales
+          WHERE batch_id = ?
+        `)
+        .get(batchId);
+
+      const birdsAlive =
+        Math.max(
+          0,
+          Number(batch.chicks || 0) -
+          Number(totals.total_dead || 0)
+        );
+
+      const totalFeed =
+        Number(totals.total_feed || 0);
+
+      const totalWeight =
+        Number(totals.total_weight || 0);
+
+      const fcr =
+        totalWeight > 0
+          ? totalFeed / totalWeight
+          : 0;
+
+      const chickCost =
+        Number(batch.chicks || 0) *
+        Number(batch.chick_rate || 0);
+
+      const totalCost =
+        chickCost +
+        Number(feedCost.total_feed_cost || 0) +
+        Number(totals.total_medicine || 0) +
+        Number(totals.total_other || 0);
+
+      const costPerKg =
+        totalWeight > 0
+          ? totalCost / totalWeight
+          : 0;
+
+      const totalSale =
+        Number(sales.total_sale || 0);
+
+      const profit =
+        totalSale - totalCost;
+
+      res.json({
+        batch,
+        daily,
+
+        birds_alive: birdsAlive,
+
+        totals: {
+          total_feed: Number(
+            totalFeed.toFixed(2)
+          ),
+
+          total_dead: Number(
+            totals.total_dead || 0
+          ),
+
+          total_weight: Number(
+            totalWeight.toFixed(2)
+          ),
+
+          total_medicine: Number(
+            totals.total_medicine || 0
+          ),
+
+          total_other: Number(
+            totals.total_other || 0
+          )
+        },
+
+        feed_cost: Number(
+          Number(
+            feedCost.total_feed_cost || 0
+          ).toFixed(2)
+        ),
+
+        fcr: Number(
+          fcr.toFixed(2)
+        ),
+
+        chick_cost: Number(
+          chickCost.toFixed(2)
+        ),
+
+        total_cost: Number(
+          totalCost.toFixed(2)
+        ),
+
+        cost_per_kg: Number(
+          costPerKg.toFixed(2)
+        ),
+
+        sales: {
+          total_sale_kg: Number(
+            sales.total_sale_kg || 0
+          ),
+
+          total_sale_nang: Number(
+            sales.total_sale_nang || 0
+          ),
+
+          total_sale: Number(
+            totalSale.toFixed(2)
+          )
+        },
+
+        profit: Number(
+          profit.toFixed(2)
+        )
+      });
+
+    } catch (err) {
+      res.status(500).json({
+        error: err.message
+      });
+    }
+  }
+);
+
+// =====================================================
+// CLOSE BATCH
+// =====================================================
+
+app.patch(
+  "/api/batches/:id/close",
+  auth,
+  ownerOnly,
+  (req, res) => {
+
+    try {
+      db.prepare(`
+        UPDATE batches
+        SET status = 'completed'
+        WHERE id = ?
+      `).run(
+        Number(req.params.id)
+      );
+
+      res.json({
+        success: true,
+        status: "completed"
+      });
+
+    } catch (err) {
+      res.status(400).json({
+        error: err.message
+      });
+    }
+  }
+);
+
+// =====================================================
 // HOME
-// =========================
+// =====================================================
 
 app.get("/", (req, res) => {
   res.sendFile(
-    path.join(__dirname, "public", "index.html")
+    path.join(
+      __dirname,
+      "public",
+      "index.html"
+    )
   );
 });
 
-// =========================
+// =====================================================
 // SERVER
-// =========================
+// =====================================================
 
-const PORT = process.env.PORT || 3000;
+const PORT =
+  process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`Poultry Manager running on port ${PORT}`);
+  console.log(
+    `Poultry Manager running on port ${PORT}`
+  );
 });
